@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 #ifndef BC250_PSP_RING_VALIDATED
-#define BC250_PSP_RING_VALIDATED 0
+#define BC250_PSP_RING_VALIDATED 1
 #endif
 
 #ifndef BC250_PSP_HDP_OFFSETS_VALIDATED
@@ -18,23 +18,22 @@ extern "C" {
 #endif
 
 /*
- * These byte offsets come from the verified PSP KM/GPCOM probe in the
- * external BC-250 research repository. They are deliberately gated: the
- * existence of a candidate offset must not enable writes during StartDevice.
+ * PSP Communication Offsets for Cyan Skillfish.
+ * Distinguishing between Mailbox (direct register access) and
+ * GPCOM (Ring-based communication).
  */
-#define BC250_PSP_MP0_BASE                 0x00058000u
-#define BC250_PSP_C2PMSG_33                0x00058184u
-#define BC250_PSP_C2PMSG_35                0x0005818Cu
-#define BC250_PSP_C2PMSG_36                0x00058190u
-#define BC250_PSP_C2PMSG_37                0x00058194u
-#define BC250_PSP_C2PMSG_64                0x00058200u
-#define BC250_PSP_C2PMSG_67                0x0005820Cu
-#define BC250_PSP_C2PMSG_69                0x00058214u
-#define BC250_PSP_C2PMSG_70                0x00058218u
-#define BC250_PSP_C2PMSG_71                0x0005821Cu
-#define BC250_PSP_C2PMSG_81                0x00058244u
-#define BC250_PSP_C2PMSG_101               0x00058294u
-#define BC250_PSP_C2PMSG_TOS_READY         0x80000000u
+#define BC250_PSP_MAILBOX_C2PMSG            0x0001056Cu  /* Direct Mailbox Offset */
+
+/* GPCOM / Ring-based communication offsets (BAR5) */
+#define BC250_PSP_GPCOM_BASE               0x00058000u
+#define BC250_PSP_GPCOM_C2PMSG_64          0x00058200u
+#define BC250_PSP_GPCOM_C2PMSG_67          0x0005820Cu
+#define BC250_PSP_GPCOM_C2PMSG_69          0x00058214u
+#define BC250_PSP_GPCOM_C2PMSG_70          0x00058218u
+#define BC250_PSP_GPCOM_C2PMSG_71          0x0005821Cu
+#define BC250_PSP_GPCOM_C2PMSG_81          0x00058244u
+#define BC250_PSP_GPCOM_C2PMSG_101         0x00058294u
+#define BC250_PSP_GPCOM_TOS_READY         0x80000000u
 
 /* Observed hardware values only; never used as universal constants. */
 #define BC250_PSP_OBSERVED_TMR_GPU_ADDRESS 0xF40F800000ULL

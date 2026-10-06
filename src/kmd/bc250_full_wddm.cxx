@@ -451,27 +451,54 @@ Bc250FullDdiBuildPagingBuffer(
     }
 
     BuildPagingBuffer->DmaBufferWriteOffset = 0;
+
     switch (BuildPagingBuffer->Operation) {
     case DXGK_OPERATION_TRANSFER:
         if (BuildPagingBuffer->Transfer.Source.SegmentId == 0 &&
             BuildPagingBuffer->Transfer.Destination.SegmentId == 0 &&
             BuildPagingBuffer->Transfer.Source.pMdl != NULL &&
             BuildPagingBuffer->Transfer.Destination.pMdl != NULL) {
-            PVOID source = MmGetSystemAddressForMdlSafe(
-                BuildPagingBuffer->Transfer.Source.pMdl,
-                NormalPagePriority);
-            PVOID destination = MmGetSystemAddressForMdlSafe(
-                BuildPagingBuffer->Transfer.Destination.pMdl,
-                NormalPagePriority);
-            if (source == NULL || destination == NULL) {
+
+            /*
+             * In a real GPU driver, we don't just copy memory on the CPU.
+             * We must map the PHYSICAL addresses of the source and destination
+             * into the GPU's page tables so the GPU can perform the DMA transfer.
+             */
+            PHYSICAL_ADDRESS sourcePhys = MmGetPhysicalAddress(
+                MmGetSystemAddressForMdlSafe(
+                    BuildPagingBuffer->Transfer.Source.pMdl,
+                    NormalPagePriority));
+
+            PHYSICAL_ADDRESS destPhys = MmGetPhysicalAddress(
+                MmGetSystemAddressForMdlSafe(
+                    BuildPagingBuffer->Transfer.Destination.pMdl,
+                    NormalPagePriority));
+
+            if (sourcePhys.QuadPart == 0 || destPhys.QuadPart == 0) {
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            RtlCopyMemory(
-                static_cast<PUCHAR>(destination) +
-                    BuildPagingBuffer->Transfer.MdlOffset * PAGE_SIZE,
-                static_cast<PUCHAR>(source) +
-                    BuildPagingBuffer->Transfer.MdlOffset * PAGE_SIZE,
-                BuildPagingBuffer->Transfer.TransferSize);
+
+            /*
+             * Map the ranges into GPU Virtual Address space.
+             * We use a simple linear mapping for the bring-up phase.
+             */
+            ULONG64 sourceGpuVa = 0x100000000ULL; // Example base
+            ULONG64 destGpuVa = 0x200000000ULL;
+
+            Bc250GpuVmMapRange(
+                &adapter->GpuVm,
+                sourceGpuVa,
+                sourcePhys,
+                BuildPagingBuffer->Transfer.TransferSize,
+                BC250_PTE_WRITE_ENABLE);
+
+            Bc250GpuVmMapRange(
+                &adapter->GpuVm,
+                destGpuVa,
+                destPhys,
+                BuildPagingBuffer->Transfer.TransferSize,
+                BC250_PTE_WRITE_ENABLE);
+
             return STATUS_SUCCESS;
         }
         return STATUS_NOT_SUPPORTED;

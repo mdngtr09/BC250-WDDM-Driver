@@ -1,4 +1,24 @@
 #include <dispmprt.h>
+#include "bc250_memory.h"
+
+/*
+ * UMA Heap Management Implementation
+ *
+ * For the BC-250 (Cyan Skillfish), the "Local" memory is actually a carved-out
+ * portion of system RAM. We implement a simplified heap manager that
+ * tracks this carved-out range and provides allocation for KMD-internal
+ * objects (like Rings and Fences).
+ */
+
+typedef struct _BC250_UMA_HEAP {
+    PHYSICAL_ADDRESS BaseAddress;
+    SIZE_T TotalSize;
+    SIZE_T AllocatedSize;
+    PVOID CpuVirtualAddress;
+    BOOLEAN IsInitialized;
+} BC250_UMA_HEAP;
+
+static BC250_UMA_HEAP g_UmaHeap = {0};
 
 static SIZE_T
 Bc250AlignDownSize(
@@ -9,7 +29,6 @@ Bc250AlignDownSize(
     if (Alignment == 0) {
         return Value;
     }
-
     return Value - (Value % Alignment);
 }
 
@@ -20,6 +39,89 @@ Bc250MinSize(
     )
 {
     return Left < Right ? Left : Right;
+}
+
+NTSTATUS
+Bc250UmaHeapInitialize(
+    _In_ BC250_MEMORY_STATE* MemoryState
+    )
+{
+    if (MemoryState == NULL || !MemoryState->ReadyForVidMm) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Find the Local UMA segment
+    BC250_MEMORY_SEGMENT* localSeg = NULL;
+    for (ULONG i = 0; i < MemoryState->SegmentCount; ++i) {
+        if (MemoryState->Segments[i].Kind == Bc250MemoryLocalUma) {
+            localSeg = &MemoryState->Segments[i];
+            break;
+        }
+    }
+
+    if (localSeg == NULL) {
+        return STATUS_NOT_SUPPORTED; // No local carve-out found
+    }
+
+    g_UmaHeap.BaseAddress = localSeg->BaseAddress;
+    g_UmaHeap.TotalSize = localSeg->Size;
+    g_UmaHeap.AllocatedSize = 0;
+
+    // Map the carve-out into kernel space for CPU access (if CPU visible)
+    if (localSeg->CpuVisible) {
+        g_UmaHeap.CpuVirtualAddress = MmMapIoSpace(
+            localSeg->BaseAddress,
+            localSeg->Size,
+            MmNonCached);
+
+        if (g_UmaHeap.CpuVirtualAddress == NULL) {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+    }
+
+    g_UmaHeap.IsInitialized = TRUE;
+    return STATUS_SUCCESS;
+}
+
+PHYSICAL_ADDRESS
+Bc250UmaHeapAllocate(
+    _In_ SIZE_T Size,
+    _Out_ PVOID* OutCpuAddress
+    )
+{
+    if (!g_UmaHeap.IsInitialized || OutCpuAddress == NULL) {
+        return (PHYSICAL_ADDRESS){0};
+    }
+
+    // Align size to page boundary
+    SIZE_T alignedSize = (Size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    if (g_UmaHeap.AllocatedSize + alignedSize > g_UmaHeap.TotalSize) {
+        return (PHYSICAL_ADDRESS){0};
+    }
+
+    PHYSICAL_ADDRESS allocPhys;
+    allocPhys.QuadPart = g_UmaHeap.BaseAddress.QuadPart + g_UmaHeap.AllocatedSize;
+
+    if (OutCpuAddress != NULL && g_UmaHeap.CpuVirtualAddress != NULL) {
+        *OutCpuAddress = (PVOID)((ULONG_PTR)g_UmaHeap.CpuVirtualAddress + g_UmaHeap.AllocatedSize);
+    }
+
+    g_UmaHeap.AllocatedSize += alignedSize;
+    return allocPhys;
+}
+
+VOID
+Bc250UmaHeapRelease(
+    VOID
+    )
+{
+    if (g_UmaHeap.IsInitialized) {
+        if (g_UmaHeap.CpuVirtualAddress != NULL) {
+            MmUnmapIoSpace(g_UmaHeap.CpuVirtualAddress, g_UmaHeap.TotalSize);
+        }
+        RtlZeroMemory(&g_UmaHeap, sizeof(BC250_UMA_HEAP));
+    }
 }
 
 NTSTATUS
@@ -64,11 +166,6 @@ Bc250BuildUmaProfile(
     }
     MemoryState->FirmwareReservedBytes = reservedBytes;
 
-    /*
-     * A local UMA-like segment is advertised only if the firmware/runtime
-     * supplied an actual GPU-visible range. We never convert the product's
-     * nominal 16 GB into a guessed VRAM segment.
-     */
     if (Input->GpuVisibleRangeKnown && Input->GpuVisibleBytes != 0) {
         visibleBytes = Bc250AlignDownSize(Input->GpuVisibleBytes, pageSize);
         maxGpuBytes = systemBytes;
@@ -96,11 +193,6 @@ Bc250BuildUmaProfile(
         ++segmentIndex;
     }
 
-    /*
-     * WDDM's aperture segment represents discontinuous system pages exposed
-     * contiguously through the GPU page tables. If the platform supplies a
-     * CPU host aperture, prefer it; otherwise use the discovered aperture.
-     */
     apertureBytes = Input->CpuHostApertureBytes != 0
         ? Input->CpuHostApertureBytes
         : Input->ApertureBytes;
@@ -157,12 +249,7 @@ Bc250InitializeMemoryState(
     input.SystemRamBytes = (SIZE_T)DeviceInfo->SystemMemorySize.QuadPart;
     input.PageSize = 4096u;
 
-    /*
-     * DeviceInfo alone does not reveal the BC-250 firmware carve-out or the
-     * real GPU-visible range. Start with an aperture-only profile; a later
-     * IP-discovery/firmware query can fill the optional fields before VidMm.
-     */
-    input.ApertureBytes = input.SystemRamBytes;
+    input.ApertureBytes = Bc250MinSize(input.SystemRamBytes, 0x100000000u);
     input.FirmwareReservationKnown = FALSE;
     input.GpuVisibleRangeKnown = FALSE;
     input.GpuVisibleCpuAccessible = FALSE;

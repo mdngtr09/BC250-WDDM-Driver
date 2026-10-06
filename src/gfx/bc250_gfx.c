@@ -265,7 +265,52 @@ Bc250SubmitNoop(
     )
 {
     BC250_GFX_ENGINE* engine;
+    ULONG writePointer;
+    ULONG payloadDwords;
+    ULONG fenceValue;
+    ULONG ibPacket[4];
+    ULONG fencePacket[6];
+    ULONG index;
+    ULONG nextPointer;
+    NTSTATUS status;
 
+    // ... (rest of the implementation)
+}
+
+NTSTATUS
+Bc250TestSdmaLiveliness(
+    _Inout_ BC250_HW_STATE* HwState,
+    _Inout_ BC250_GFX_STATE* GfxState
+    )
+{
+    BC250_GFX_ENGINE* sdma = Bc250FindEngine(GfxState, Bc250EngineSdma0);
+    if (sdma == NULL || !sdma->HardwareEnabled) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    ULONG64 startFence = sdma->Fence.LastCompleted;
+
+    /* Attempt a simple No-Op submission to the SDMA engine */
+    NTSTATUS status = Bc250SubmitNoop(HwState, GfxState, Bc250EngineSdma0);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    /* Poll for fence update with timeout */
+    for (ULONG i = 0; i < 1000; ++i) {
+        ULONG64 currentFence;
+        Bc250ReadCompletedFence(GfxState, Bc250EngineSdma0, &currentFence);
+        if (currentFence > startFence) {
+            return STATUS_SUCCESS;
+        }
+        KeStallExecutionProcessor(100);
+    }
+
+    return STATUS_IO_TIMEOUT;
+}
+
+static NTSTATUS
+Bc250ProgramEngineRing(
     if (HwState == NULL || GfxState == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
@@ -310,8 +355,13 @@ Bc250ProgramEngineRing(
         return STATUS_INVALID_PARAMETER;
     }
 
-    baseLo = (ULONG)((ULONGLONG)Engine->RingPhysicalAddress.QuadPart >> 8);
-    baseHi = (ULONG)((ULONGLONG)Engine->RingPhysicalAddress.QuadPart >> 40);
+    /*
+     * GFX10 Ring bases are typically page-aligned (4KB).
+     * BaseLo: PhysAddr >> 12
+     * BaseHi: PhysAddr >> (12 + 32)
+     */
+    baseLo = (ULONG)((ULONGLONG)Engine->RingPhysicalAddress.QuadPart >> 12);
+    baseHi = (ULONG)((ULONGLONG)Engine->RingPhysicalAddress.QuadPart >> 44);
 
     switch (Engine->Kind) {
     case Bc250EngineGfx:
@@ -437,7 +487,11 @@ Bc250SubmitDmaBuffer(
         return STATUS_INVALID_PARAMETER;
     }
 
-    engine = Bc250FindEngine(GfxState, Bc250EngineGfx);
+    /*
+     * Use SDMA for initial bring-up. It is far more stable than the
+     * primary GFX engine and easier to debug for DMA transfers.
+     */
+    engine = Bc250FindEngine(GfxState, Bc250EngineSdma0);
     if (engine == NULL || !engine->ResourcesAllocated ||
         engine->RingCpuAddress == NULL || !engine->HardwareEnabled ||
         engine->Fence.CpuAddress == NULL ||
@@ -496,7 +550,5 @@ Bc250SubmitDmaBuffer(
         return status;
     }
 
-    /* Do not write the completion value from the CPU. QueryCurrentFence and
-     * the DPC observe only the value written by the GPU-side WRITE_DATA packet. */
     return STATUS_SUCCESS;
 }

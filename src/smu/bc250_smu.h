@@ -15,6 +15,10 @@ extern "C" {
 #define BC250_SMN_C2PMSG_82               0x03B10A48u
 #define BC250_SMN_C2PMSG_90               0x03B10A68u
 
+/* SMU Signature for Hardware Identification */
+#define BC250_SMU_SIGNATURE_REG           0x03B10A08u /* Using C2PMSG_66 as a probe */
+#define BC250_SMU_SIGNATURE_VALUE         0x1u        /* Expected ready/alive value */
+
 #define BC250_SMU_RESULT_OK                0x1u
 #define BC250_SMU_RESULT_FAILED            0xFFu
 #define BC250_SMU_RESULT_UNKNOWN_CMD       0xFEu

@@ -34,7 +34,10 @@ extern "C" {
 #define BC250_EXPECTED_BAR5_LENGTH   0x00080000ULL
 #define BC250_NBIO_SMN_INDEX_OFFSET  0x00000038u
 #define BC250_NBIO_SMN_DATA_OFFSET   0x0000003Cu
+#define BC250_SMU_SIGNATURE_REG       0x00000000u /* SMU Signature Index */
+#define BC250_SMU_SIGNATURE_VALUE     0x414D4453u /* "AMDS" in ASCII */
 #define BC250_PSP_C2PMSG_BASE_OFFSET 0x00058000u
+#define BC250_PSP_MAILBOX_OFFSET     0x0001056Cu
 #define BC250_PSP_C2PMSG_64_OFFSET   0x00058200u
 #define BC250_PSP_C2PMSG_67_OFFSET   0x0005820Cu
 #define BC250_PSP_C2PMSG_69_OFFSET   0x00058214u
@@ -121,6 +124,24 @@ Bc250UnmapMmioBars(
 NTSTATUS
 Bc250DiscoverRuntimeHardware(
     _Inout_ BC250_HW_STATE* HwState
+    );
+
+NTSTATUS
+Bc250HwInitializeSequence(
+    _Inout_ BC250_HW_STATE* HwState
+    );
+
+NTSTATUS
+Bc250HwDumpBar(
+    _In_ const BC250_HW_STATE* HwState,
+    _In_ ULONG BarIndex,
+    _In_ ULONG StartOffset,
+    _In_ ULONG Length
+    );
+
+NTSTATUS
+Bc250HwProbePsp(
+    _In_ const BC250_HW_STATE* HwState
     );
 
 NTSTATUS

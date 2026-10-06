@@ -8,6 +8,7 @@ extern "C" {
 
 #include "../hw/bc250_hw.h"
 #include "../memory/bc250_memory.h"
+#include "../memory/bc250_gpuvm.h"
 #include "../gfx/bc250_gfx.h"
 #include "../smu/bc250_smu.h"
 #include "../firmware/bc250_firmware.h"
@@ -26,6 +27,11 @@ extern "C" {
 #define BC250_LOG2(_level, _format, _arg1, _arg2) \
     DbgPrintEx(DPFLTR_IHVVIDEO_ID, (_level), "BC250KMD: " _format "\n", (_arg1), (_arg2))
 
+NTSTATUS
+Bc250KmdLoadFirmware(
+    _Inout_ BC250_DEVICE_CONTEXT* Context
+    );
+
 typedef struct _BC250_DEVICE_CONTEXT {
     PDEVICE_OBJECT PhysicalDeviceObject;
     DXGKRNL_INTERFACE DxgkInterface;
@@ -33,6 +39,7 @@ typedef struct _BC250_DEVICE_CONTEXT {
     DXGK_DEVICE_INFO DeviceInfo;
     BC250_HW_STATE Hw;
     BC250_MEMORY_STATE Memory;
+    BC250_GPUVM_STATE GpuVm;
     BC250_GFX_STATE Gfx;
     BC250_SMU_STATE Smu;
     BC250_FIRMWARE_STATE Firmware;

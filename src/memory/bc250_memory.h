@@ -64,6 +64,9 @@ typedef struct _BC250_MEMORY_STATE {
     BOOLEAN Uma;
     BOOLEAN Conservative;
     BOOLEAN ReadyForVidMm;
+
+    // Advanced Heap Manager
+    struct _BC250_HEAP_MANAGER HeapMgr;
 } BC250_MEMORY_STATE;
 
 struct _DXGK_DEVICE_INFO;

@@ -236,18 +236,37 @@ Bc250DdiStartDevice(
                "Recursos MMIO mapeados; quantidade de BARs: %lu",
                context->Hw.MappedBarCount);
 
-    status = Bc250DiscoverRuntimeHardware(&context->Hw);
+    /*
+     * Hardware Initialization Sequence:
+     * Replace dispersed probes with a centralized sequence.
+     * This ensures SMN and PSP are validated before any GFX state is touched.
+     */
+    status = Bc250HwInitializeSequence(&context->Hw);
     if (!NT_SUCCESS(status)) {
         BC250_LOG1(DPFLTR_ERROR_LEVEL,
-                   "Descoberta runtime Cyan Skillfish falhou: 0x%08X",
+                   "Sequencia de inicializacao de hardware falhou: 0x%08X",
                    status);
         Bc250PspReleaseState(&context->Psp);
         Bc250UnmapMmioBars(&context->Hw);
         return status;
     }
 
-    /* Only the confirmed BAR5 path may access the SMN mailbox. */
-    context->Hw.AllowSmnMailbox = TRUE;
+    BC250_LOG0(DPFLTR_INFO_LEVEL, "Hardware inicializado e validado com sucesso.");
+
+    /*
+     * Firmware Loading Phase:
+     * Now that hardware is verified, we must load the binary blobs into the PSP.
+     */
+    status = Bc250KmdLoadFirmware(context);
+    if (!NT_SUCCESS(status)) {
+        BC250_LOG1(DPFLTR_WARNING_LEVEL,
+                   "Carregamento de firmware falhou ou foi parcial: 0x%08X",
+                   status);
+        /* We continue in experimental mode even if some firmware fails,
+           but we mark GfxReady as FALSE. */
+    } else {
+        BC250_LOG0(DPFLTR_INFO_LEVEL, "Todo o firmware essencial foi carregado.");
+    }
 
     /*
      * The PSP GPCOM implementation is deliberately independent from the
@@ -292,6 +311,20 @@ Bc250DdiStartDevice(
         return status;
     }
 
+    /*
+     * Initialize GPU Virtual Memory (GPUVM) state.
+     * This sets up the root page tables needed for the GPU to access system RAM.
+     */
+    status = Bc250GpuVmInitialize(&context->GpuVm);
+    if (!NT_SUCCESS(status)) {
+        BC250_LOG1(DPFLTR_ERROR_LEVEL,
+                   "Inicializacao do GPUVM falhou: 0x%08X",
+                   status);
+        Bc250PspReleaseState(&context->Psp);
+        Bc250UnmapMmioBars(&context->Hw);
+        return status;
+    }
+
     status = Bc250InitializeGfxState(&context->Gfx);
     if (!NT_SUCCESS(status)) {
         BC250_LOG1(DPFLTR_ERROR_LEVEL,
@@ -327,7 +360,38 @@ Bc250DdiStartDevice(
         return status;
     }
 
+    /*
+     * Program the rings into the hardware.
+     * This is the final step to enable GFX/SDMA engines.
+     */
+    /*
+     * Program the rings into the hardware.
+     * This is the final step to enable GFX/SDMA engines.
+     */
+    status = Bc250ProgramGfxRings(&context->Hw, &context->Gfx);
+    if (!NT_SUCCESS(status)) {
+        BC250_LOG1(DPFLTR_WARNING_LEVEL,
+                   "Falha ao programar rings no hardware: 0x%08X",
+                   status);
+    } else {
+        BC250_LOG0(DPFLTR_INFO_LEVEL, "Rings de GFX/SDMA programados com sucesso.");
+
+        /*
+         * SDMA Liveliness Test:
+         * Attempt to submit a no-op to verify that the hardware is actually
+         * processing commands and updating fences.
+         */
+        if (Bc250TestSdmaLiveliness(&context->Hw, &context->Gfx) == STATUS_SUCCESS) {
+            BC250_LOG0(DPFLTR_INFO_LEVEL, "SUCESSO: SDMA Liveliness Test passou. GPU está processando comandos!");
+            context->Hw.GfxReady = TRUE;
+        } else {
+            BC250_LOG0(DPFLTR_WARNING_LEVEL, "ALERTA: SDMA Liveliness Test falhou. Hardware pode estar em reset ou firmware ausente.");
+        }
+    }
+
     /* The public blobs are packaged and validated separately, but this KMD
+
+
      * does not yet load CP/SDMA firmware through PSP. Do not claim that the
      * engines or their fences are live merely because ring memory exists. */
     context->Gfx.FirmwareLoaded = FALSE;
@@ -653,6 +717,63 @@ BC250_UNSUPPORTED_ADAPTER_CONST_CALLBACK(Bc250DdiUpdateActiveVidPnPresentPath, D
 
 #undef BC250_UNSUPPORTED_ADAPTER_CONST_CALLBACK
 #undef BC250_UNSUPPORTED_ADAPTER_INOUT_CALLBACK
+
+NTSTATUS
+Bc250KmdLoadFirmware(
+    _Inout_ BC250_DEVICE_CONTEXT* Context
+    )
+{
+    BC250_FIRMWARE_IMAGE images[Bc250FirmwareCount] = {};
+    BC250_FIRMWARE_STATE fwState = {};
+    ULONG imageCount = 0;
+    NTSTATUS status;
+
+    if (Context == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    PAGED_CODE();
+
+    BC250_LOG0(DPFLTR_INFO_LEVEL, "Iniciando carregamento de firmware via PSP...");
+
+    for (ULONG kind = 0; kind < Bc250FirmwareCount; ++kind) {
+        PCWSTR fileName = Bc250FirmwareGetName(&Context->Hw, (BC250_FIRMWARE_KIND)kind);
+        if (fileName == NULL) {
+            continue;
+        }
+
+        BC250_LOG1(DPFLTR_INFO_LEVEL, "Processando imagem: %ls", fileName);
+
+        BC250_FIRMWARE_IMAGE* image = &images[kind];
+        image->Kind = (BC250_FIRMWARE_KIND)kind;
+        image->Size = 0;
+        image->Data = NULL;
+
+        if (Bc250FirmwareIsRequired(&Context->Hw, (BC250_FIRMWARE_KIND)kind)) {
+            status = Bc250PspLoadFirmware(&Context->Hw, &Context->Psp, &Context->Firmware, image);
+            if (!NT_SUCCESS(status)) {
+                BC250_LOG2(DPFLTR_WARNING_LEVEL, "Falha ao carregar %ls: 0x%08X", fileName, status);
+            } else {
+                imageCount++;
+            }
+        }
+    }
+
+    status = Bc250FirmwareValidateSet(&Context->Hw, images, imageCount, &fwState);
+    if (!NT_SUCCESS(status)) {
+        BC250_LOG1(DPFLTR_ERROR_LEVEL, "Conjunto de firmware invalidado: 0x%08X", status);
+        return status;
+    }
+
+    status = Bc250FirmwareCommitReady(&Context->Hw, &fwState);
+    if (!NT_SUCCESS(status)) {
+        BC250_LOG1(DPFLTR_ERROR_LEVEL, "Erro ao consolidar prontidao de firmware: 0x%08X", status);
+        return status;
+    }
+
+    BC250_LOG0(DPFLTR_INFO_LEVEL, "Sequencia de carregamento de firmware finalizada.");
+    return STATUS_SUCCESS;
+}
 
 NTSTATUS
 Bc250DdiStopDeviceAndReleasePostDisplayOwnership(

@@ -15,7 +15,13 @@
 #define BC250_GFX_OFFSETS_VALIDATED 0
 #endif
 
-#define BC250_GC_MMIO_REG(_index) ((_index) * 4u)
+/*
+ * Cyan Skillfish IP Base Address (Segment 0).
+ * Confirmed via Linux cyan_skillfish_ip_offset.h.
+ */
+#define BC250_GC_BASE 0x1260u
+
+#define BC250_GC_MMIO_REG(_index) (BC250_GC_BASE + ((_index) * 4u))
 
 #define BC250_GC_CP_RB0_RPTR       BC250_GC_MMIO_REG(0x0F60u)
 #define BC250_GC_CP_RB0_BASE       BC250_GC_MMIO_REG(0x1DE0u)
@@ -24,7 +30,7 @@
 #define BC250_GC_CP_RB0_WPTR_HI    BC250_GC_MMIO_REG(0x1DF5u)
 #define BC250_GC_CP_RB0_BASE_HI    BC250_GC_MMIO_REG(0x1E51u)
 
-#define BC250_SDMA_MMIO_REG(_index) ((_index) * 4u)
+#define BC250_SDMA_MMIO_REG(_index) (BC250_GC_BASE + ((_index) * 4u))
 
 /* SDMA5 RLC0 and RLC1 candidate ring register groups. */
 #define BC250_SDMA0_RB_CNTL        BC250_SDMA_MMIO_REG(0x012Eu)

@@ -164,6 +164,90 @@ Bc250UnmapMmioBars(
 
 
 NTSTATUS
+Bc250HwProbeSmn(
+    _Inout_ BC250_HW_STATE* HwState
+    )
+{
+    ULONG index;
+    ULONG value;
+
+    if (HwState == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    for (index = 0; index < BC250_MAX_BARS; ++index) {
+        if (!HwState->Bars[index].Mapped) {
+            continue;
+        }
+
+        /* Attempt to read SMU signature from this BAR */
+        volatile ULONG* indexReg = (volatile ULONG*)((PUCHAR)HwState->Bars[index].VirtualAddress + BC250_NBIO_SMN_INDEX_OFFSET);
+        volatile ULONG* dataReg = (volatile ULONG*)((PUCHAR)HwState->Bars[index].VirtualAddress + BC250_NBIO_SMN_DATA_OFFSET);
+
+        if (indexReg == NULL || dataReg == NULL) continue;
+
+        WRITE_REGISTER_ULONG(indexReg, BC250_SMU_SIGNATURE_REG);
+        KeMemoryBarrier();
+        value = READ_REGISTER_ULONG(dataReg);
+
+        if (value == BC250_SMU_SIGNATURE_VALUE) {
+            DbgPrint("BC250: SMU Signature found on BAR[%u]!\n", index);
+            HwState->SmnBarIndex = index;
+            return STATUS_SUCCESS;
+        }
+    }
+
+    DbgPrint("BC250: SMU Signature probe failed on all BARs.\n");
+    return STATUS_DEVICE_NOT_READY;
+}
+
+NTSTATUS
+Bc250HwInitializeSequence(
+    _Inout_ BC250_HW_STATE* HwState
+    )
+{
+    NTSTATUS status;
+
+    if (HwState == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    DbgPrint("BC250: Starting Hardware Initialization Sequence...\n");
+
+    /* 1. Discover BARs and resource layout */
+    status = Bc250DiscoverRuntimeHardware(HwState);
+    if (!NT_SUCCESS(status)) {
+        DbgPrint("BC250: Init failed at Discovery: 0x%08X\n", status);
+        return status;
+    }
+
+    /* 2. Validate SMN (System Management Network) Access */
+    status = Bc250HwProbeSmn(HwState);
+    if (!NT_SUCCESS(status)) {
+        DbgPrint("BC250: Init failed at SMN Probe: 0x%08X\n", status);
+        return status;
+    }
+
+    /* 3. Validate PSP (Platform Security Processor) Liveliness */
+    status = Bc250HwProbePsp(HwState);
+    if (!NT_SUCCESS(status)) {
+        DbgPrint("BC250: Init failed at PSP Probe: 0x%08X\n", status);
+        return status;
+    }
+
+    /*
+     * If we reached here, the PCIe -> BAR -> Register path is functional.
+     * We can now safely allow writes to the device registers.
+     */
+    HwState->AllowRegisterWrites = TRUE;
+    HwState->IsStarted = TRUE;
+    HwState->RuntimeDiscovered = TRUE;
+
+    DbgPrint("BC250: Hardware Initialization Sequence COMPLETED successfully.\n");
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
 Bc250DiscoverRuntimeHardware(
     _Inout_ BC250_HW_STATE* HwState
     )
@@ -216,8 +300,24 @@ Bc250DiscoverRuntimeHardware(
      * physical range is confirmed, avoiding writes into an arbitrary BAR.
      */
     if (candidateCount == 0 ||
-        HwState->SmnBarIndex == MAXULONG ||
         HwState->RegisterBarIndex == MAXULONG) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    /* Probe for SMN BAR using hardware signature instead of fixed physical address */
+    NTSTATUS status = Bc250HwProbeSmn(HwState);
+    if (!NT_SUCCESS(status)) {
+        DbgPrint("BC250: Failed to probe SMN BAR. Falling back to candidate search.\n");
+        for (index = 0; index < BC250_MAX_BARS; ++index) {
+            if (HwState->Bars[index].Mapped &&
+                HwState->Bars[index].PhysicalAddress.QuadPart == BC250_EXPECTED_BAR5_PHYSICAL) {
+                HwState->SmnBarIndex = index;
+                break;
+            }
+        }
+    }
+
+    if (HwState->SmnBarIndex == MAXULONG) {
         return STATUS_DEVICE_NOT_READY;
     }
 
@@ -229,6 +329,84 @@ Bc250DiscoverRuntimeHardware(
     HwState->VmReady = FALSE;
     HwState->AllowRegisterWrites = FALSE;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+Bc250HwDumpBar(
+    _In_ const BC250_HW_STATE* HwState,
+    _In_ ULONG BarIndex,
+    _In_ ULONG StartOffset,
+    _In_ ULONG Length
+    )
+{
+    ULONG index;
+    ULONG value;
+    PVOID base;
+
+    if (HwState == NULL || BarIndex >= BC250_MAX_BARS || !HwState->Bars[BarIndex].Mapped) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    base = HwState->Bars[BarIndex].VirtualAddress;
+
+    DbgPrint("BC250: Dumping BAR[%u] from offset 0x%X (Length: 0x%X)\n",
+             BarIndex, StartOffset, Length);
+
+    for (index = 0; index < Length; index += sizeof(ULONG)) {
+        value = READ_REGISTER_ULONG((volatile ULONG*)((PUCHAR)base + StartOffset + index));
+        DbgPrint("BC250: [BAR%u] 0x%08X: 0x%08X\n", BarIndex, StartOffset + index, value);
+    }
+
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+Bc250HwProbePsp(
+    _In_ const BC250_HW_STATE* HwState
+    )
+{
+    ULONG value;
+    ULONG pspBar;
+
+    if (HwState == NULL || HwState->PspBarIndex >= BC250_MAX_BARS) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    pspBar = HwState->PspBarIndex;
+    DbgPrint("BC250: Probing PSP on BAR[%u]\n", pspBar);
+
+    /*
+     * Test 1: Mailbox Mode (Liveliness Test)
+     * The Mailbox is the simplest way to check if the BAR is mapped and responding.
+     */
+    value = READ_REGISTER_ULONG((volatile ULONG*)((PUCHAR)
+        HwState->Bars[pspBar].VirtualAddress + BC250_PSP_MAILBOX_OFFSET));
+
+    DbgPrint("BC250: PSP Mailbox (0x%X) Read Value: 0x%08X\n",
+             BC250_PSP_MAILBOX_OFFSET, value);
+
+    if (value != 0 && value != 0xFFFFFFFF) {
+        DbgPrint("BC250: PSP Mailbox probe SUCCESS: Hardware responded.\n");
+        return STATUS_SUCCESS;
+    }
+
+    /*
+     * Test 2: Ring Mode (GPCOM)
+     * Only likely to respond if firmware is already initialized.
+     */
+    DbgPrint("BC250: Mailbox failed, trying Ring Mode at 0x%X\n", BC250_PSP_C2PMSG_64_OFFSET);
+    value = READ_REGISTER_ULONG((volatile ULONG*)((PUCHAR)
+        HwState->Bars[pspBar].VirtualAddress + BC250_PSP_C2PMSG_64_OFFSET));
+
+    DbgPrint("BC250: PSP C2PMSG_64 Read Value: 0x%08X\n", value);
+
+    if (value != 0 && value != 0xFFFFFFFF) {
+        DbgPrint("BC250: PSP Ring probe SUCCESS: Hardware responded.\n");
+        return STATUS_SUCCESS;
+    }
+
+    DbgPrint("BC250: PSP Probe failed on all modes: No response or invalid BAR.\n");
+    return STATUS_DEVICE_NOT_READY;
 }
 
 NTSTATUS

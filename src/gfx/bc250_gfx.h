@@ -108,6 +108,12 @@ Bc250SubmitNoop(
     _In_ BC250_ENGINE_KIND EngineKind
     );
 
+NTSTATUS
+Bc250TestSdmaLiveliness(
+    _Inout_ BC250_HW_STATE* HwState,
+    _Inout_ BC250_GFX_STATE* GfxState
+    );
+
 #ifdef __cplusplus
 }
 #endif

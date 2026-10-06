@@ -281,26 +281,26 @@ Bc250PspCreateRing(
         return STATUS_SUCCESS;
     }
 
-    status = Bc250PspReadRegister(HwState, BC250_PSP_C2PMSG_81, &c2pmsg81);
+    status = Bc250PspReadRegister(HwState, BC250_PSP_GPCOM_C2PMSG_81, &c2pmsg81);
     if (!NT_SUCCESS(status)) {
         ExReleaseFastMutex(&PspState->Mutex);
         return status;
     }
 
-    status = Bc250PspReadRegister(HwState, BC250_PSP_C2PMSG_64, &c2pmsg64);
+    status = Bc250PspReadRegister(HwState, BC250_PSP_GPCOM_C2PMSG_64, &c2pmsg64);
     if (!NT_SUCCESS(status)) {
         ExReleaseFastMutex(&PspState->Mutex);
         return status;
     }
 
     for (waited = 0; waited < BC250_PSP_TIMEOUT_MS; ++waited) {
-        if ((c2pmsg64 & BC250_PSP_C2PMSG_TOS_READY) != 0) {
+        if ((c2pmsg64 & BC250_PSP_GPCOM_TOS_READY) != 0) {
             break;
         }
         KeStallExecutionProcessor(1000);
         status = Bc250PspReadRegister(
             HwState,
-            BC250_PSP_C2PMSG_64,
+            BC250_PSP_GPCOM_C2PMSG_64,
             &c2pmsg64);
         if (!NT_SUCCESS(status)) {
             ExReleaseFastMutex(&PspState->Mutex);
@@ -308,7 +308,7 @@ Bc250PspCreateRing(
         }
     }
 
-    if ((c2pmsg64 & BC250_PSP_C2PMSG_TOS_READY) == 0) {
+    if ((c2pmsg64 & BC250_PSP_GPCOM_TOS_READY) == 0) {
         ExReleaseFastMutex(&PspState->Mutex);
         return STATUS_IO_TIMEOUT;
     }
@@ -323,24 +323,24 @@ Bc250PspCreateRing(
 
     status = Bc250PspWriteRegister(
         HwState,
-        BC250_PSP_C2PMSG_69,
+        BC250_PSP_GPCOM_C2PMSG_69,
         (ULONG)(PspState->RingPhysicalAddress.QuadPart & 0xFFFFFFFFu));
     if (NT_SUCCESS(status)) {
         status = Bc250PspWriteRegister(
             HwState,
-            BC250_PSP_C2PMSG_70,
+            BC250_PSP_GPCOM_C2PMSG_70,
             (ULONG)(PspState->RingPhysicalAddress.QuadPart >> 32));
     }
     if (NT_SUCCESS(status)) {
         status = Bc250PspWriteRegister(
             HwState,
-            BC250_PSP_C2PMSG_71,
+            BC250_PSP_GPCOM_C2PMSG_71,
             BC250_PSP_RING_SIZE);
     }
     if (NT_SUCCESS(status)) {
         status = Bc250PspWriteRegister(
             HwState,
-            BC250_PSP_C2PMSG_64,
+            BC250_PSP_GPCOM_C2PMSG_64,
             BC250_PSP_RING_TYPE_KM << 16);
     }
 
